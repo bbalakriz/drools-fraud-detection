@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<kmodule xmlns="http://jboss.org/kie/6.0.0/kmodule">
+	<kbase name="fd-rules" equalsBehavior="equality" eventProcessingMode="stream" packages="rules">
+		<ksession name="fd-session-stateful" default="true" type="stateful" clockType="pseudo" />
+		<ksession name="fd-session" default="false" type="stateless" clockType="pseudo" />
+	</kbase>
+</kmodule>

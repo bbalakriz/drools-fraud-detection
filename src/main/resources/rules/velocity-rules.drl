@@ -1,0 +1,555 @@
+package com.dm.poc.fraud.rules;
+
+// Imports used in this DRL
+import com.dm.poc.fraud.domain.Transaction;
+import com.dm.poc.fraud.domain.TransactionEvent;
+import com.dm.poc.fraud.domain.PotentialFraudFact;
+import com.dm.poc.fraud.domain.WhichAggRuleToFire;
+import com.dm.poc.fraud.domain.DontFireOtherSubRules;
+import org.kie.api.runtime.KieSession;
+import java.math.BigDecimal;
+import java.sql.Timestamp;
+
+/* Global Variables containing list of STATIC values that are to be used for evaluating preconditions. 
+ * These values are fed in during during rule invokation through REST API 
+ */ 
+global java.util.List mccList;
+global java.util.List ctryList;
+global java.util.List mccList2;
+global java.util.List mechList2;
+global java.util.List mechList3;
+global java.util.List mechList4;
+global java.util.List cardIdList4;
+global java.util.List amexCardList;
+global java.util.List exclCardIdList;
+global java.util.List exclCardIdList2;
+global java.util.List tweaMerchantIdList;
+global java.util.List highRiskMerchantCatList;
+
+/** Cache Profile Loader service that puts and gets relevant transaction data from Data Grid */
+global com.dm.poc.fraud.CachedProfileLoader cpLoaderService;
+
+// TransactionEvent against which the aggregate conditions for the fraud check have to be evaluated 
+declare TransactionEvent
+    @role( event )
+    @timestamp( TranTimestamp )    
+end
+
+/* Query to get the PotentialFraudFacts from REST API response. This query is used because filtering on
+get-objects doesn't work. Refer JIRA: DROOLS-3460 */  
+
+query getPotentialFraudFacts
+    $pff : PotentialFraudFact()
+end
+
+/**********************************************RULE 1A******************************************************/
+
+rule "Precondition-Rule1A"
+no-loop true
+when
+	not (DontFireOtherSubRules(name == "1"))
+    $transaction : Transaction(
+    						    CrdAccptStcry == "SG" 
+    						    && Amt > 1000 
+    						    && CardBrand in ("VISA","MASTERCARD","UPI","AMEX")
+    						    && MerchantCat in (7999,8011,8021,8031,8041,8042,8043,8044,
+    						  					 7692,5977,5973,5812,6011,9222,9224)
+    						    && $cardId : CardId
+    						  )
+    							
+then
+	System.out.println("\n*************Precondition-Rule1A executed*************");
+	insert(new DontFireOtherSubRules("1"));
+	cpLoaderService.insertAndLoadProfile(120, $transaction, $cardId, "", 
+						 					(KieSession)(kcontext.getKieRuntime()), 
+						 					new BigDecimal(5000), 2, new Double(150), "Rule1");
+end
+
+/**********************************************RULE 1B******************************************************/
+
+rule "Precondition-Rule1B"
+no-loop true
+when
+	not (DontFireOtherSubRules(name == "1"))	
+    $transaction : Transaction(
+    						    Amt > 100 
+    						    && CrdAccptStcry in ("MY","ID","TW") 
+    						    && CardBrand in ("VISA","MASTERCARD","UPI","AMEX")
+    						    && MerchantCat in (7999,8011,8021,8031,8041,8042,8043,8044,
+    						  					 7692,5977,5973,5812,6011,9222,9224)
+    						    && $cardId : CardId
+    						  )
+    							
+then
+	System.out.println("\n*************Precondition-Rule1B executed*************");
+	insert(new DontFireOtherSubRules("1"));
+	cpLoaderService.insertAndLoadProfile(120, $transaction, $cardId, "", 
+						 					(KieSession)(kcontext.getKieRuntime()), 
+						 					new BigDecimal(5000), 2, new Double(150), "Rule1");
+end
+
+
+rule "Aggregatecondition-Rule1"
+no-loop true
+when
+	WhichAggRuleToFire(ruleName == "Rule1", $aCountValue: aCountValue, $aTotalValue: aTotalValue)
+	$transaction : Transaction($cardId : CardId, $msgUId : MsgUID, $channel : RqClientId)
+	accumulate ($transEvent : TransactionEvent(RuleId == "Rule1", AggKey == $cardId, 
+												$amount : TranAmount, $txn : CachedTransaction) 
+						over window:time (120m) from entry-point Transactions;
+				$nrOfTransactions : count($transEvent), 
+				$total : sum($amount),
+				$list: collectList($txn);
+				$nrOfTransactions > $aCountValue && $total > $aTotalValue)
+    
+then
+	PotentialFraudFact potentialFraud = new PotentialFraudFact($msgUId + "-1", $msgUId, "1",											 "Rule1", 0, new Timestamp(System.currentTimeMillis()).toString(),
+											 $cardId, $channel, $list, true, false, false, true);
+	insert(potentialFraud);
+	cpLoaderService.insertIntoDevPatternCache("Rule1", $msgUId, $cardId, $aTotalValue, $aCountValue);
+	System.out.println("Found a fraud.");
+	System.out.println("aggCountValue is: " + $aCountValue);
+	System.out.println("aggTotalValue is: " + $aTotalValue);
+	System.out.println("*************Action triggered for the rule Aggregatecondition-Rule1*************");
+	System.out.println($total);
+	System.out.println($nrOfTransactions);
+	System.out.println(potentialFraud);
+end
+
+/*************************************************RULE 2A***************************************************/
+
+rule "Precondition-Rule2A"
+no-loop true
+when
+	not (DontFireOtherSubRules(name == "2"))
+    $transaction : Transaction(
+    							RiskScore >= 30
+								&& Amt > 10 
+								&& CrdAccptStcry in ("BRA","ETH","GHA","GNB","GNB","GNQ","GMB","ARG") 
+    							//&& CardPresent == 2
+    							&& amexCardList contains CardId
+    							//CardId in ("5678", "1234")
+    						  	&& $cardId : CardId
+    						  )
+    							
+then
+	System.out.println("\n*************Precondition-Rule2A executed*************");
+	insert(new DontFireOtherSubRules("2"));
+	cpLoaderService.insertAndLoadProfile(120, $transaction, $cardId, "", 
+						 					(KieSession)(kcontext.getKieRuntime()), 
+						 					null, 2, new Double(125), "Rule2");
+end
+
+/*************************************************RULE 2B***************************************************/
+
+rule "Precondition-Rule2B"
+no-loop true
+when
+	not (DontFireOtherSubRules(name == "2"))
+    $transaction : Transaction(
+    							RiskScore >= 30 
+    							&& Amt > 10 
+    							&& CrdAccptStcry in ("BRA","ETH","GHA","GNB","GNB","GNQ","GMB","ARG") 
+    							//&& CardPresent == 2
+    							&& tweaMerchantIdList contains MerchantId 
+    							//MerchantId in ("000000012454533", "000000012454534", "000000012454535")
+    						  	&& $cardId : CardId
+    						  )
+    							
+then
+	System.out.println("\n*************Precondition-Rule2B executed*************");
+	insert(new DontFireOtherSubRules("2"));
+	cpLoaderService.insertAndLoadProfile(120, $transaction, $cardId, "", 
+						 					(KieSession)(kcontext.getKieRuntime()), 
+						 					null, 2, new Double(125), "Rule2");
+end
+
+/*************************************************RULE 2C***************************************************/
+
+rule "Precondition-Rule2C"
+no-loop true
+when
+	not (DontFireOtherSubRules(name == "2"))
+    $transaction : Transaction(
+    							RiskScore >= 30
+								&& Amt > 50 
+								&& CrdAccptStcry in ("GRC","ARE","AUT","AUS","MYS","CHE","CAN")
+								//&& CardPresent == 2
+    						  	&& $cardId : CardId
+    						  )
+    							
+then
+	System.out.println("\n*************Precondition-Rule2C executed*************");
+	insert(new DontFireOtherSubRules("2"));
+	cpLoaderService.insertAndLoadProfile(120, $transaction, $cardId, "", 
+						 					(KieSession)(kcontext.getKieRuntime()), 
+						 					null, 2, new Double(125), "Rule2");
+end
+
+rule "Aggregatecondition-Rule2"
+no-loop true
+when
+	WhichAggRuleToFire(ruleName == "Rule2", $aCountValue: aCountValue)
+	$transaction : Transaction($cardId : CardId, $msgUId : MsgUID, $channel : RqClientId)
+	accumulate ($transEvent : TransactionEvent(RuleId == "Rule2", AggKey == $cardId, 
+												$txn : CachedTransaction) 
+						over window:time (120m) from entry-point Transactions;
+				$nrOfTransactions : count($transEvent), 
+				$list: collectList($txn);
+				$nrOfTransactions > $aCountValue)
+    
+then
+	PotentialFraudFact potentialFraud = new PotentialFraudFact($msgUId + "-2", $msgUId, "2",
+											 "Rule2", 0, new Timestamp(System.currentTimeMillis()).toString(),
+											 $cardId, $channel, $list, true, false, false, true);
+	insert(potentialFraud);
+	cpLoaderService.insertIntoDevPatternCache("Rule2", $msgUId, $cardId, null, $aCountValue);
+	System.out.println("Found a fraud.");
+	System.out.println("aggCountValue is: " + $aCountValue);
+	System.out.println("*************Action triggered for the rule Aggregatecondition-Rule2*************");
+	System.out.println($nrOfTransactions);
+end
+
+/****************************************************RULE 3************************************************/
+
+rule "Precondition-Rule3"
+no-loop true
+when
+    $transaction : Transaction(
+    						  	RiskScore >= 70 //&& CardPresent == 2
+    						  	&& Amt > 10 
+    						  	&& highRiskMerchantCatList contains MerchantCat
+    						  	//MerchantCat in (7999,8011,8021,8031,8041,8042,8043,8044)
+    						  	&& $cardId : CardId 
+    						  	&& $merchantId : MerchantId
+    						  )
+    							
+then
+	System.out.println("\n*************Precondition-Rule3 executed*************");
+	cpLoaderService.insertAndLoadProfile(30, $transaction, $cardId + $merchantId, "", 
+						 					(KieSession)(kcontext.getKieRuntime()), 
+						 					null, 3, null, "Rule3");
+end
+
+rule "Aggregatecondition-Rule3"
+no-loop true
+when
+	WhichAggRuleToFire(ruleName == "Rule3")
+	$transaction : Transaction($cardId : CardId,  $merchantId : MerchantId, $msgUId : MsgUID, $channel : RqClientId)
+	accumulate ($transEvent : TransactionEvent(RuleId == "Rule3", AggKey == $cardId + $merchantId, 
+												$txn : CachedTransaction) 
+						over window:time (30m) from entry-point Transactions;
+				$nrOfTransactions : count($transEvent), 
+				$list: collectList($txn);
+				$nrOfTransactions > 3)
+    
+then
+	PotentialFraudFact potentialFraud = new PotentialFraudFact($msgUId + "-3", $msgUId, "3",
+											 "Rule3", 0, new Timestamp(System.currentTimeMillis()).toString(),
+											 $cardId, $channel, $list, true, false, false, true);
+	insert(potentialFraud);
+	System.out.println("Found a fraud.");
+	System.out.println("*************Action triggered for the rule Aggregatecondition-Rule3*************");
+	System.out.println($nrOfTransactions);
+end
+
+/****************************************************RULE 4************************************************/
+
+rule "Precondition-Rule4"
+no-loop true
+when
+    $transaction : Transaction(	// Change MerchantCat to 8011 for local data testing
+    						  	MerchantCat == 6011 
+    						  	&& CrdAccptStcry != "SGP" 
+    						  	&& Amt > 10 
+    						  	&& $cardId : CardId && $terminalId : TerminalId
+    						  )
+    							
+then
+	System.out.println("\n*************Precondition-Rule4 executed*************");
+	cpLoaderService.insertAndLoadProfile(60, $transaction, $cardId, $terminalId, 
+						 					(KieSession)(kcontext.getKieRuntime()), 
+						 					null, 20, null, "Rule4");
+end
+
+rule "Aggregatecondition-Rule4"
+no-loop true
+when
+	WhichAggRuleToFire(ruleName == "Rule4")
+	$transaction : Transaction($cardId : CardId, $terminalId : TerminalId, $msgUId : MsgUID, $channel : RqClientId)
+	accumulate ($transEvent : TransactionEvent(RuleId == "Rule4", AggKey == $cardId, DistinctKey == $terminalId,
+												$txn : CachedTransaction) 
+						over window:time (60m) from entry-point Transactions;
+				$nrOfTransactions : count($transEvent), 
+				$list: collectList($txn);
+				$nrOfTransactions > 20) // Change nrOfTransactions to 4 for local data testing
+    
+then
+	PotentialFraudFact potentialFraud = new PotentialFraudFact($msgUId + "-4", $msgUId, "4",
+											 "Rule4", 0, new Timestamp(System.currentTimeMillis()).toString(),
+											 $cardId, $channel, $list, true, false, false, true);
+	insert(potentialFraud);
+	System.out.println("Found a fraud.");
+	System.out.println("*************Action triggered for the rule Aggregatecondition-Rule4*************");
+	System.out.println($nrOfTransactions);
+end
+
+/****************************************************RULE 5************************************************/
+
+rule "Precondition-Rule5"
+no-loop true
+when
+    $transaction : Transaction(	
+    						  	Amt > 100 
+    						  	&& mccList contains MerchantCat 
+    						  	&& ctryList contains CrdAccptStcry 
+    						  	&& $cardId : CardId
+    						  )
+    							
+then
+	System.out.println("\n*************Precondition-Rule5 executed*************");
+	cpLoaderService.insertAndLoadProfile(120, $transaction, $cardId, "", 
+						 					(KieSession)(kcontext.getKieRuntime()), 
+						 					new BigDecimal(2000), 0, null, "Rule5");
+end
+
+rule "Aggregatecondition-Rule5"
+no-loop true
+when
+	WhichAggRuleToFire(ruleName == "Rule5")
+	$transaction : Transaction($cardId : CardId, $msgUId : MsgUID, $channel : RqClientId)
+	accumulate ($transEvent : TransactionEvent(RuleId == "Rule5", AggKey == $cardId,
+												$amount : TranAmount, $txn : CachedTransaction) 
+						over window:time (120m) from entry-point Transactions;
+				$total : sum($amount),
+				$list: collectList($txn);
+				$total > 2000)
+    
+then
+	PotentialFraudFact potentialFraud = new PotentialFraudFact($msgUId + "-5", $msgUId, "5",
+											 "Rule5", 0, new Timestamp(System.currentTimeMillis()).toString(),
+											 $cardId, $channel, $list, true, false, false, true);
+	insert(potentialFraud);
+	System.out.println("Found a fraud.");
+	System.out.println("*************Action triggered for the rule Aggregatecondition-Rule5*************");
+	System.out.println($total);
+end
+
+/****************************************************RULE 6A************************************************/
+
+rule "Precondition-Rule6A"
+no-loop true
+when
+    $transaction : Transaction(	
+   						  	    CardBrand == "VISA" 
+   						  	    && Amt > 100
+    						  	&& $cardId : CardId
+    						  )
+    							
+then
+	System.out.println("\n*************Precondition-Rule6A executed*************");
+	cpLoaderService.insertAndLoadProfile(120, $transaction, $cardId, "", 
+						 					(KieSession)(kcontext.getKieRuntime()), 
+						 					null, 20, null, "Rule6");
+end
+
+/****************************************************RULE 6B************************************************/
+
+rule "Precondition-Rule6B"
+no-loop true
+when
+    $transaction : Transaction(	
+    						  	CardBrand == "MASTERCARD" 
+    						  	&& Amt > 50  
+    						  	&& $cardId : CardId
+    						  )
+    							
+then
+	System.out.println("\n*************Precondition-Rule6B executed*************");
+	cpLoaderService.insertAndLoadProfile(120, $transaction, $cardId, "", 
+						 					(KieSession)(kcontext.getKieRuntime()), 
+						 					null, 20, null, "Rule6");
+end
+
+rule "Aggregatecondition-Rule6"
+no-loop true
+when
+	WhichAggRuleToFire(ruleName == "Rule6")
+	$transaction : Transaction($cardId : CardId, $msgUId : MsgUID, $channel : RqClientId)
+	accumulate ($transEvent : TransactionEvent(RuleId == "Rule6", AggKey == $cardId, $txn : CachedTransaction) 
+						over window:time (120m) from entry-point Transactions;
+				$nrOfTransactions : count($transEvent), 
+				$list: collectList($txn);
+				$nrOfTransactions > 20) //Change it to 4 for local testing
+    
+then
+	PotentialFraudFact potentialFraud = new PotentialFraudFact($msgUId + "-6", $msgUId, "6",
+											 "Rule6", 0, new Timestamp(System.currentTimeMillis()).toString(),
+											 $cardId, $channel, $list, true, false, false, true);
+	insert(potentialFraud);
+	System.out.println("Found a fraud.");
+	System.out.println("*************Action triggered for the rule Aggregatecondition-Rule6*************");
+	System.out.println($nrOfTransactions);
+end
+
+/****************************************************RULE 7************************************************/
+
+rule "Precondition-Rule7"
+no-loop true
+when
+    $transaction : Transaction(	
+    						  	TranCur == "USD" 
+    						  	&& TranStatusReason in ("V_091", "V_234") 
+    						  	&& exclCardIdList contains CardId 
+    						  	&& mccList2 contains MerchantCat
+    						  	&& $cardId : CardId
+    						  )
+then
+	System.out.println("\n*************Precondition-Rule7 executed*************");
+	cpLoaderService.insertAndLoadProfile(90, $transaction, $cardId, "", 
+						 					(KieSession)(kcontext.getKieRuntime()), 
+						 					new BigDecimal(5000), 12, null, "Rule7");
+end
+
+rule "Aggregatecondition-Rule7"
+no-loop true
+when
+	WhichAggRuleToFire(ruleName == "Rule7")
+	$transaction : Transaction($cardId : CardId, $msgUId : MsgUID, $channel : RqClientId)
+	accumulate ($transEvent : TransactionEvent(RuleId == "Rule7", AggKey == $cardId, $amount : TranAmount, 
+												$txn : CachedTransaction) 
+						over window:time (90m) from entry-point Transactions;
+				$total : sum($amount),
+				$nrOfTransactions : count($transEvent), 
+				$list: collectList($txn);
+				$total > 5000 && $nrOfTransactions > 12) // Change it to 4 for local testing
+    
+then
+	PotentialFraudFact potentialFraud = new PotentialFraudFact($msgUId + "-7", $msgUId, "7",
+											 "Rule7", 0, new Timestamp(System.currentTimeMillis()).toString(),
+											 $cardId, $channel, $list, true, false, false, true);
+	insert(potentialFraud);
+	System.out.println("Found a fraud.");
+	System.out.println("*************Action triggered for the rule Aggregatecondition-Rule7*************");
+	System.out.println($nrOfTransactions);
+end
+
+/****************************************************RULE 8************************************************/
+
+rule "Precondition-Rule8"
+no-loop true
+when
+    $transaction : Transaction(	
+    						  	TranCur == "SGD" 
+    						  	&& TranStatusReason == "V_00"
+    						  	&& exclCardIdList2 contains CardId 
+    						  	&& mechList2 contains MerchantId
+    						  	&& $merchantId : MerchantId
+    						  )
+then
+	System.out.println("\n*************Precondition-Rule8 executed*************");
+	cpLoaderService.insertAndLoadProfile(240, $transaction, $merchantId, "", 
+						 					(KieSession)(kcontext.getKieRuntime()), 
+						 					null, 6, null, "Rule8");
+end
+
+rule "Aggregatecondition-Rule8"
+no-loop true
+when
+	WhichAggRuleToFire(ruleName == "Rule8")
+	$transaction : Transaction($cardId : CardId, $merchantId : MerchantId, $msgUId : MsgUID, $channel : RqClientId)
+	accumulate ($transEvent : TransactionEvent(RuleId == "Rule8", AggKey == $merchantId, $txn : CachedTransaction) 
+						over window:time (240m) from entry-point Transactions;
+				$nrOfTransactions : count($transEvent), 
+				$list: collectList($txn);
+				$nrOfTransactions > 6) // Change it to 2 for local testing
+    
+then
+	PotentialFraudFact potentialFraud = new PotentialFraudFact($msgUId + "-8", $msgUId, "8",
+											 "Rule8", 0, new Timestamp(System.currentTimeMillis()).toString(),
+											 $cardId, $channel, $list, true, false, false, true);
+	insert(potentialFraud);
+	System.out.println("Found a fraud.");
+	System.out.println("*************Action triggered for the rule Aggregatecondition-Rule8*************");
+	System.out.println($nrOfTransactions);
+end
+
+/****************************************************RULE 9************************************************/
+
+rule "Precondition-Rule9"
+no-loop true
+when
+    $transaction : Transaction(	
+    							CrdAccptStcry != "SGP" 
+    							&& Amt > 50 
+    							&& mechList3 contains MerchantId 
+    						  	&& $cardId : CardId 
+    						  	&& $merchantId : MerchantId
+    						  )
+then
+	System.out.println("\n*************Precondition-Rule9 executed*************");
+	cpLoaderService.insertAndLoadProfile(240, $transaction, $cardId, $merchantId, 
+						 					(KieSession)(kcontext.getKieRuntime()), 
+						 					null, 10, null, "Rule9");
+end
+
+rule "Aggregatecondition-Rule9"
+no-loop true
+when
+	WhichAggRuleToFire(ruleName == "Rule9")
+	$transaction : Transaction($cardId : CardId, $merchantId : MerchantId, $msgUId : MsgUID, $channel : RqClientId)
+	accumulate ($transEvent : TransactionEvent(RuleId == "Rule9", AggKey == $cardId, DistinctKey == $merchantId,
+												$txn : CachedTransaction) 
+						over window:time (240m) from entry-point Transactions;
+				$nrOfTransactions : count($transEvent), 
+				$list: collectList($txn);
+				$nrOfTransactions > 10) // Change it to 2 for local testing
+    
+then
+	PotentialFraudFact potentialFraud = new PotentialFraudFact($msgUId + "-9", $msgUId, "9",
+											 "Rule9", 0, new Timestamp(System.currentTimeMillis()).toString(),
+											 $cardId, $channel, $list, true, false, false, true);
+	insert(potentialFraud);
+	System.out.println("Found a fraud.");
+	System.out.println("*************Action triggered for the rule Aggregatecondition-Rule9*************");
+	System.out.println($nrOfTransactions);
+end
+
+/****************************************************RULE 10************************************************/
+
+rule "Precondition-Rule10"
+no-loop true
+when
+    $transaction : Transaction(	
+    							cardIdList4 not contains CardId 
+    							&& mechList4 contains MerchantId 
+    						  	&& $merchantId : MerchantId
+    						  )
+then
+	System.out.println("\n*************Precondition-Rule10 executed*************");
+	cpLoaderService.insertAndLoadProfile(90, $transaction, $merchantId, "", 
+						 					(KieSession)(kcontext.getKieRuntime()), 
+						 					new BigDecimal(5000), 0, null, "Rule10");
+end
+
+rule "Aggregatecondition-Rule10"
+no-loop true
+when
+	WhichAggRuleToFire(ruleName == "Rule10")
+	$transaction : Transaction($cardId : CardId, $merchantId : MerchantId, $msgUId : MsgUID, $channel : RqClientId)
+	accumulate ($transEvent : TransactionEvent(RuleId == "Rule10", AggKey == $merchantId, $amount : TranAmount, 
+												$txn : CachedTransaction) 
+						over window:time (90m) from entry-point Transactions;
+				$total : sum($amount), 
+				$list: collectList($txn);
+				$total > 5000)
+    
+then
+	PotentialFraudFact potentialFraud = new PotentialFraudFact($msgUId + "-10", $msgUId, "10",
+											 "Rule10", 0, new Timestamp(System.currentTimeMillis()).toString(),
+											 $cardId, $channel, $list, true, false, false, true);
+	insert(potentialFraud);
+	System.out.println("Found a fraud.");
+	System.out.println("*************Action triggered for the rule Aggregatecondition-Rule10*************");
+	System.out.println($total);
+end
